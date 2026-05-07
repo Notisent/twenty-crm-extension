@@ -289,7 +289,7 @@ export class TwentyApiClient {
       console.log('[Twenty] Upload result:', result);
       
       if (result.errors?.length) {
-        console.error('[Twenty] GraphQL errors:', result.errors);
+        console.error('[Twenty] GraphQL errors:', JSON.stringify(result.errors, null, 2));
         return null;
       }
 

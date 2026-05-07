@@ -351,6 +351,12 @@ export default defineContentScript({
     let container: HTMLDivElement | null = null;
     let styleEl: HTMLStyleElement | null = null;
     
+    // Detect "Extension context invalidated" — happens when the extension is reloaded
+    // while the tab is still open, causing the content script to lose its background connection.
+    function isContextInvalidated(error: unknown): boolean {
+      return error instanceof Error && error.message.includes('Extension context invalidated');
+    }
+
     // Initialize
     function init() {
       // Inject styles
@@ -425,10 +431,14 @@ export default defineContentScript({
         }
       } catch (error) {
         console.error('Error checking existing:', error);
-        setState({ status: 'error', error: 'Failed to check CRM' });
+        if (isContextInvalidated(error)) {
+          setState({ status: 'error', error: 'Reload this tab to reconnect' });
+        } else {
+          setState({ status: 'error', error: 'Failed to check CRM' });
+        }
       }
     }
-    
+
     // Handle capture button click
     async function handleCapture() {
       if (state.status !== 'ready') return;
@@ -472,10 +482,14 @@ export default defineContentScript({
         }, 2000);
       } catch (error) {
         console.error('Error creating record:', error);
-        setState({ status: 'error', error: 'Failed to save', data });
+        if (isContextInvalidated(error)) {
+          setState({ status: 'error', error: 'Reload this tab to reconnect', data });
+        } else {
+          setState({ status: 'error', error: 'Failed to save', data });
+        }
       }
     }
-    
+
     // Open record in Twenty
     async function openInTwenty() {
       if (!state.existingRecord) return;
@@ -571,10 +585,14 @@ export default defineContentScript({
         }, 2000);
       } catch (error) {
         console.error('Error updating record:', error);
-        setState({ status: 'error', error: 'Failed to update', data });
+        if (isContextInvalidated(error)) {
+          setState({ status: 'error', error: 'Reload this tab to reconnect', data });
+        } else {
+          setState({ status: 'error', error: 'Failed to update', data });
+        }
       }
     }
-    
+
     // Update state and re-render
     function setState(newState: Partial<CaptureState>) {
       state = { ...state, ...newState };
@@ -698,10 +716,14 @@ export default defineContentScript({
         }, 2000);
       } catch (error) {
         console.error('Error updating record:', error);
-        setState({ status: previousStatus, error: 'Failed to update', data });
+        if (isContextInvalidated(error)) {
+          setState({ status: 'error', error: 'Reload this tab to reconnect', data });
+        } else {
+          setState({ status: previousStatus, error: 'Failed to update', data });
+        }
       }
     }
-    
+
     // Handle search input
     function handleSearchInput(e: Event) {
       const input = e.target as HTMLInputElement;
