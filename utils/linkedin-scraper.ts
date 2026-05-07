@@ -67,24 +67,24 @@ export function scrapePersonProfile(): LinkedInProfileData | null {
     const headline = topCardPs[0]?.textContent?.trim() || '';
 
     // Company priority:
-    // 1. scrapeCurrentCompanyFromProfile — explicit link/button, most reliable + gives LinkedIn URL
-    // 2. extractCompanyFromHeadline — "X at Company" / "X bei Company" patterns in headline
-    // 3. topCardPs[1] first segment — LinkedIn concatenates multiple employers with " · "; take only first
-    let currentCompany = '';
+    // 1. Experience section leaves[1] first segment — the actual employer list, most accurate
+    // 2. scrapeCurrentCompanyFromProfile — explicit link/button (also gives LinkedIn URL)
+    // 3. topCardPs[1] first segment — header concatenates multiple employers with "·"; take first only
+    // (headline extraction removed: too unreliable when person has multiple roles/employers)
+    const experienceData = scrapeFirstExperience();
+
+    let currentCompany = experienceData?.currentCompany || '';
     let currentCompanyLinkedInUrl: string | undefined;
 
-    const companyData = scrapeCurrentCompanyFromProfile();
-    if (companyData?.name) {
-      currentCompany = companyData.name;
-      currentCompanyLinkedInUrl = companyData.linkedinUrl;
-    }
-
     if (!currentCompany) {
-      currentCompany = extractCompanyFromHeadline(headline);
+      const companyData = scrapeCurrentCompanyFromProfile();
+      if (companyData?.name) {
+        currentCompany = companyData.name;
+        currentCompanyLinkedInUrl = companyData.linkedinUrl;
+      }
     }
 
     if (!currentCompany && topCardPs[1]) {
-      // Take only the first segment before any " · " separator
       currentCompany = topCardPs[1].textContent?.trim().split('·')[0].trim() || '';
     }
 
@@ -93,7 +93,6 @@ export function scrapePersonProfile(): LinkedInProfileData | null {
       topCardPs[1]?.textContent?.trim() || '';
 
     const profileImageUrl = scrapeProfileImage();
-    const experienceData = scrapeFirstExperience();
 
     return {
       type: 'person' as const,
@@ -270,6 +269,7 @@ export function scrapeCurrentPage(): LinkedInData | null {
 // Scrape the first (most recent) experience entry from the experience section
 function scrapeFirstExperience(): {
   jobTitle?: string;
+  currentCompany?: string;
   employmentType?: 'FULL_TIME' | 'PART_TIME' | 'SELF_EMPLOYED' | 'FREELANCE' | 'CONTRACT' | 'INTERNSHIP';
   jobStartDate?: string;
   workArrangement?: 'ON_SITE' | 'HYBRID' | 'REMOTE';
@@ -302,9 +302,12 @@ function scrapeFirstExperience(): {
 
     const jobTitle = leaves[0]?.textContent?.trim() || undefined;
 
+    // leaves[1] = "Company · EmploymentType" — first segment is the company name
+    let currentCompany: string | undefined;
     let employmentType: 'FULL_TIME' | 'PART_TIME' | 'SELF_EMPLOYED' | 'FREELANCE' | 'CONTRACT' | 'INTERNSHIP' | undefined;
     if (leaves[1]) {
       const parts = (leaves[1].textContent?.trim() || '').split('·').map((s) => s.trim());
+      currentCompany = parts[0] || undefined;
       if (parts.length >= 2) employmentType = parseEmploymentType(parts[1]);
     }
 
@@ -326,7 +329,7 @@ function scrapeFirstExperience(): {
     const descEl = leaves.find((el) => el.tagName === 'SPAN');
     const jobDescription = descEl?.textContent?.trim() || undefined;
 
-    return { jobTitle, employmentType, jobStartDate, workArrangement, jobDescription };
+    return { jobTitle, currentCompany, employmentType, jobStartDate, workArrangement, jobDescription };
   } catch (error) {
     console.error('Error scraping experience section:', error);
     return null;
