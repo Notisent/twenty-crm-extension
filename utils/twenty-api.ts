@@ -194,7 +194,17 @@ export class TwentyApiClient {
   private token: string | null = null;
 
   constructor(baseUrl: string) {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+    const url = baseUrl.replace(/\/$/, '');
+    const isLocalhost = url.startsWith('http://localhost') || url.startsWith('http://127.');
+    if (!url.startsWith('https://') && !isLocalhost) {
+      throw new Error('Twenty URL must use HTTPS');
+    }
+    try {
+      new URL(url);
+    } catch {
+      throw new Error('Invalid Twenty URL');
+    }
+    this.baseUrl = url;
   }
 
   setToken(token: string) {
@@ -221,6 +231,12 @@ export class TwentyApiClient {
 
       const blob = await response.blob();
       console.log('[Twenty] Image fetched, size:', blob.size, 'type:', blob.type);
+
+      const allowedImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+      if (!allowedImageTypes.includes(blob.type)) {
+        console.error('[Twenty] Unexpected content type for profile image:', blob.type);
+        return null;
+      }
       
       const finalFilename = filename || `profile-${Date.now()}.jpg`;
 

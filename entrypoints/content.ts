@@ -728,7 +728,12 @@ export default defineContentScript({
       // Main button
       const btn = document.createElement('button');
       btn.className = `twenty-capture-btn twenty-capture-btn--${state.status}`;
-      btn.innerHTML = `${getButtonIcon()}<span>${getButtonText()}</span>`;
+      const iconContainer = document.createElement('span');
+      iconContainer.innerHTML = getButtonIcon(); // hardcoded SVG constants only
+      btn.appendChild(iconContainer);
+      const textSpan = document.createElement('span');
+      textSpan.textContent = getButtonText();
+      btn.appendChild(textSpan);
       btn.addEventListener('click', handleClick);
       btnGroup.appendChild(btn);
       
@@ -815,10 +820,19 @@ export default defineContentScript({
           searchResults.forEach((result) => {
             const item = document.createElement('div');
             item.className = 'twenty-search-result';
-            item.innerHTML = `
-              <div class="twenty-search-result-name">${result.name}</div>
-              ${result.subtitle ? `<div class="twenty-search-result-sub">${result.subtitle}</div>` : ''}
-            `;
+
+            const nameDiv = document.createElement('div');
+            nameDiv.className = 'twenty-search-result-name';
+            nameDiv.textContent = result.name;
+            item.appendChild(nameDiv);
+
+            if (result.subtitle) {
+              const subDiv = document.createElement('div');
+              subDiv.className = 'twenty-search-result-sub';
+              subDiv.textContent = result.subtitle;
+              item.appendChild(subDiv);
+            }
+
             item.addEventListener('click', () => linkToRecord(result));
             resultsDiv.appendChild(item);
           });

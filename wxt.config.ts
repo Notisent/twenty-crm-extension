@@ -8,7 +8,8 @@ export default defineConfig({
     description: 'Capture LinkedIn profiles and companies to your Twenty CRM',
     version: '1.0.0',
     permissions: ['storage', 'cookies', 'activeTab'],
-    host_permissions: ['*://*.linkedin.com/*', '*://*/*'],
+    host_permissions: ['*://*.linkedin.com/*'],
+    optional_host_permissions: ['*://*/*'],
     icons: {
       16: '/icon/16.png',
       32: '/icon/32.png',
