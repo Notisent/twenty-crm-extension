@@ -560,11 +560,15 @@ export class TwentyApiClient {
           primaryLinkUrl: data.linkedinUrl,
           primaryLinkLabel: 'LinkedIn',
         },
-        jobTitle: data.headline || '',
+        jobTitle: data.jobTitleFromExperience || data.headline || '',
         avatarUrl: avatarUrl,
         city: data.location || '',
-        // Link to company if we found/created one
         companyId: companyId,
+        // Custom fields from experience section
+        ...(data.employmentType && { employmentType: data.employmentType }),
+        ...(data.jobStartDate && { jobStartDate: data.jobStartDate }),
+        ...(data.workArrangement && { workArrangement: data.workArrangement }),
+        ...(data.jobDescription && { jobDescription: data.jobDescription }),
       },
     });
 
@@ -722,10 +726,15 @@ export class TwentyApiClient {
               primaryLinkUrl: personData.linkedinUrl,
               primaryLinkLabel: 'LinkedIn',
             },
-            jobTitle: personData.headline || undefined,
+            jobTitle: personData.jobTitleFromExperience || personData.headline || undefined,
             avatarUrl: avatarUrl,
             city: personData.location || undefined,
             companyId: companyId,
+            // Custom fields from experience section
+            ...(personData.employmentType && { employmentType: personData.employmentType }),
+            ...(personData.jobStartDate && { jobStartDate: personData.jobStartDate }),
+            ...(personData.workArrangement && { workArrangement: personData.workArrangement }),
+            ...(personData.jobDescription && { jobDescription: personData.jobDescription }),
           },
         }
       );

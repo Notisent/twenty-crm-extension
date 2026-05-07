@@ -6,8 +6,15 @@ export type LinkedInProfileData = {
   lastName: string;
   headline?: string;
   currentCompany?: string;
+  currentCompanyLinkedInUrl?: string;
   profileImageUrl?: string;
   location?: string;
+  // Experience section fields
+  jobTitleFromExperience?: string;
+  employmentType?: 'FULL_TIME' | 'PART_TIME' | 'SELF_EMPLOYED' | 'FREELANCE' | 'CONTRACT' | 'INTERNSHIP';
+  jobStartDate?: string; // ISO date string YYYY-MM-DD
+  workArrangement?: 'ON_SITE' | 'HYBRID' | 'REMOTE';
+  jobDescription?: string;
 };
 
 export type LinkedInCompanyData = {
