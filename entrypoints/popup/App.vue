@@ -94,14 +94,42 @@ async function saveSettings() {
     error.value = 'Please enter your Twenty URL';
     return;
   }
-  
+
   // Normalize URL
   let url = twentyUrl.value.trim();
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     url = 'https://' + url;
   }
   url = url.replace(/\/$/, ''); // Remove trailing slash
+
+  // Enforce HTTPS for non-localhost URLs
+  const isLocalhost = url.startsWith('http://localhost') || url.startsWith('http://127.');
+  if (url.startsWith('http://') && !isLocalhost) {
+    error.value = 'HTTPS is required. Please use https:// to protect your API token.';
+    return;
+  }
+
+  // Validate URL structure
+  try {
+    new URL(url);
+  } catch {
+    error.value = 'Invalid URL format.';
+    return;
+  }
+
   twentyUrl.value = url;
+
+  // Request host permission for the specific Twenty URL (scoped, not all-URLs)
+  try {
+    const granted = await browser.permissions.request({ origins: [`${url}/*`] });
+    if (!granted) {
+      error.value = 'Permission to access your Twenty URL is required for the extension to work.';
+      return;
+    }
+  } catch (err) {
+    // permissions.request() fails outside a user gesture — shouldn't happen here
+    console.error('Permission request error:', err);
+  }
   
   isSaving.value = true;
   error.value = null;
