@@ -66,9 +66,11 @@ export function scrapePersonProfile(): LinkedInProfileData | null {
 
     const headline = topCardPs[0]?.textContent?.trim() || '';
 
-    // Company: second meaningful p, validated against known noise patterns.
-    // Also try the aria-label button approach which works on some LinkedIn versions.
-    let currentCompany = topCardPs[1]?.textContent?.trim() || '';
+    // Company priority:
+    // 1. scrapeCurrentCompanyFromProfile — explicit link/button, most reliable + gives LinkedIn URL
+    // 2. extractCompanyFromHeadline — "X at Company" / "X bei Company" patterns in headline
+    // 3. topCardPs[1] first segment — LinkedIn concatenates multiple employers with " · "; take only first
+    let currentCompany = '';
     let currentCompanyLinkedInUrl: string | undefined;
 
     const companyData = scrapeCurrentCompanyFromProfile();
@@ -79,6 +81,11 @@ export function scrapePersonProfile(): LinkedInProfileData | null {
 
     if (!currentCompany) {
       currentCompany = extractCompanyFromHeadline(headline);
+    }
+
+    if (!currentCompany && topCardPs[1]) {
+      // Take only the first segment before any " · " separator
+      currentCompany = topCardPs[1].textContent?.trim().split('·')[0].trim() || '';
     }
 
     // Location: third meaningful p (or second if no company found yet)
