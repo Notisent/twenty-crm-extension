@@ -327,7 +327,6 @@ export class TwentyApiClient {
       },
       body: JSON.stringify({ query, variables }),
     });
-
     if (!response.ok) {
       throw new Error(`HTTP error: ${response.status}`);
     }
@@ -618,12 +617,12 @@ export class TwentyApiClient {
 
   async testConnection(): Promise<boolean> {
     try {
-      // Simple query to test if the connection works
-      const result = await this.graphqlRequest<{ currentWorkspace: { id: string } }>(
-        `query { currentWorkspace { id } }`
+      const result = await this.graphqlRequest<{ people: unknown }>(
+        `query { people(first: 1) { edges { node { id } } } }`
       );
-      return !result.errors?.length && !!result.data?.currentWorkspace;
-    } catch {
+      return !result.errors?.length && result.data?.people !== undefined;
+    } catch (err) {
+      console.error('[Twenty] testConnection error:', err);
       return false;
     }
   }
