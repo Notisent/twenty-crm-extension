@@ -302,13 +302,27 @@ function scrapeFirstExperience(): {
 
     const jobTitle = leaves[0]?.textContent?.trim() || undefined;
 
-    // leaves[1] = "Company · EmploymentType" — first segment is the company name
+    // leaves[1] = "Company · EmploymentType" or just "EmploymentType" (when company isn't shown)
     let currentCompany: string | undefined;
     let employmentType: 'FULL_TIME' | 'PART_TIME' | 'SELF_EMPLOYED' | 'FREELANCE' | 'CONTRACT' | 'INTERNSHIP' | undefined;
     if (leaves[1]) {
-      const parts = (leaves[1].textContent?.trim() || '').split('·').map((s) => s.trim());
-      currentCompany = parts[0] || undefined;
-      if (parts.length >= 2) employmentType = parseEmploymentType(parts[1]);
+      const raw = leaves[1].textContent?.trim() || '';
+      const parts = raw.split('·').map((s) => s.trim());
+      if (parts.length >= 2) {
+        // "Company · EmploymentType" — unambiguous
+        currentCompany = parts[0] || undefined;
+        employmentType = parseEmploymentType(parts[1]);
+      } else {
+        // Single segment: could be a company name OR just an employment type keyword
+        // Only treat as company name if it doesn't match any employment type
+        const asType = parseEmploymentType(raw);
+        if (asType) {
+          employmentType = asType;
+          // company name not available from this leaf; leave currentCompany undefined
+        } else {
+          currentCompany = raw || undefined;
+        }
+      }
     }
 
     let jobStartDate: string | undefined;
