@@ -363,17 +363,42 @@ export default defineContentScript({
       styleEl = document.createElement('style');
       styleEl.textContent = FLOATING_BUTTON_STYLES;
       document.head.appendChild(styleEl);
-      
+
       // Create container for floating button
       container = document.createElement('div');
       container.id = 'twenty-capture-root';
       document.body.appendChild(container);
-      
+
       // Initial render
       render();
-      
+
       // Check for existing record after a short delay
       setTimeout(checkExisting, 1500);
+
+      // LinkedIn is a SPA — the content script doesn't re-run on client-side navigation.
+      // Intercept pushState and listen for popstate to re-initialize when the URL changes.
+      let lastUrl = window.location.href;
+      const onUrlChange = () => {
+        const newUrl = window.location.href;
+        if (newUrl !== lastUrl) {
+          lastUrl = newUrl;
+          // Reset state and re-check if we're still on a matching page
+          if (getLinkedInPageType(newUrl)) {
+            state = { status: 'idle' };
+            render();
+            setTimeout(checkExisting, 2000); // extra delay for SPA render
+          } else {
+            state = { status: 'idle' };
+            render();
+          }
+        }
+      };
+      const origPushState = history.pushState.bind(history);
+      history.pushState = (...args: Parameters<typeof history.pushState>) => {
+        origPushState(...args);
+        onUrlChange();
+      };
+      window.addEventListener('popstate', onUrlChange);
     }
     
     // Check for existing record
@@ -442,8 +467,16 @@ export default defineContentScript({
     // Handle capture button click
     async function handleCapture() {
       if (state.status !== 'ready') return;
-      
-      const data = state.data || scrapeCurrentPage();
+
+      // Try scraping up to 3 times with short delays — the page may still be rendering
+      let data = state.data || scrapeCurrentPage();
+      if (!data) {
+        for (const delay of [500, 1000]) {
+          await new Promise((r) => setTimeout(r, delay));
+          data = scrapeCurrentPage();
+          if (data) break;
+        }
+      }
       if (!data) {
         showToast('Could not extract profile data');
         return;
