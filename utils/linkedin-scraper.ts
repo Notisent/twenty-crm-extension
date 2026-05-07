@@ -269,78 +269,55 @@ function scrapeFirstExperience(): {
   jobDescription?: string;
 } | null {
   try {
-    // LinkedIn experience section has id="experience" on the containing section or a nearby anchor
-    const experienceAnchor =
-      document.getElementById('experience') ||
-      document.querySelector('[id^="experience"]');
+    // Find the experience section by its H2 heading text (works across all locales)
+    const sections = Array.from(document.querySelectorAll('section'));
+    const expSection = sections.find((s) => {
+      const h2 = s.querySelector('h2');
+      const text = h2?.textContent?.trim() || '';
+      return /^(Erfahrung|Experience|Expérience|Experiencia|Esperienza|Erfaring|Doświadczenie|Experiência)$/i.test(text);
+    });
 
-    if (!experienceAnchor) return null;
+    if (!expSection) return null;
 
-    // Walk up to the section element that contains the experience list
-    let experienceSection: Element | null = experienceAnchor;
-    while (experienceSection && experienceSection.tagName !== 'SECTION') {
-      experienceSection = experienceSection.parentElement;
-    }
-    if (!experienceSection) return null;
+    // Collect all leaf elements (no child elements, non-empty text), skipping the H2 heading
+    const leaves = Array.from(expSection.querySelectorAll('*')).filter(
+      (el) => el.childElementCount === 0 && (el.textContent?.trim().length ?? 0) > 0 && el.tagName !== 'H2'
+    );
 
-    // Each experience entry is an <li> inside a <ul>
-    const firstEntry = experienceSection.querySelector('ul > li');
-    if (!firstEntry) return null;
+    if (leaves.length < 2) return null;
 
-    // Extract all visible text nodes from meaningful leaf elements within the first entry
-    const texts = Array.from(firstEntry.querySelectorAll('span[aria-hidden="true"]'))
-      .map((el) => el.textContent?.trim() || '')
-      .filter((t) => t.length > 0);
+    // LinkedIn experience entry structure (leaf P elements in order):
+    // [0] P  → job title           e.g. "Lead Software Engineer"
+    // [1] P  → company · type      e.g. "GlobalLogic · Vollzeit"
+    // [2] P  → date · duration     e.g. "Apr. 2023–Heute · 3 Jahre 2 Monate"
+    // [3] P  → location · arrange  e.g. "Berlin, Deutschland · Hybrid"
+    // [4] SPAN → description text
 
-    if (texts.length === 0) return null;
+    const jobTitle = leaves[0]?.textContent?.trim() || undefined;
 
-    // texts[0]: job title
-    // texts[1]: "Company · EmploymentType" or just "Company"
-    // texts[2]: date range "Feb. 2024 – Heute · 2 J. 4 Mo." or "Apr. 2023 – ..."
-    // texts[3]: location line "City, Region · WorkArrangement" or just "City, Region"
-    // texts[4+]: description paragraphs
-
-    const jobTitle = texts[0];
-
-    // Parse employment type from the company·type line
-    let employmentType: ReturnType<typeof scrapeFirstExperience> extends null ? never : NonNullable<ReturnType<typeof scrapeFirstExperience>>['employmentType'] = undefined;
-    if (texts[1]) {
-      const parts = texts[1].split('·').map((s) => s.trim());
-      if (parts.length >= 2) {
-        employmentType = parseEmploymentType(parts[1]);
-      }
+    let employmentType: 'FULL_TIME' | 'PART_TIME' | 'SELF_EMPLOYED' | 'FREELANCE' | 'CONTRACT' | 'INTERNSHIP' | undefined;
+    if (leaves[1]) {
+      const parts = (leaves[1].textContent?.trim() || '').split('·').map((s) => s.trim());
+      if (parts.length >= 2) employmentType = parseEmploymentType(parts[1]);
     }
 
-    // Parse start date from date range line (first date before "–" or end of string)
     let jobStartDate: string | undefined;
-    const dateLine = texts.find((t) => /\d{4}/.test(t) && (t.includes('–') || t.includes('-') || t.includes('heute') || t.includes('Heute') || t.includes('Present') || t.includes('present')));
-    if (dateLine) {
-      const startPart = dateLine.split(/[–-]/)[0].trim().replace(/\s*·.*$/, '');
+    if (leaves[2]) {
+      const dateLine = leaves[2].textContent?.trim() || '';
+      const startPart = dateLine.split(/[–\-]/)[0].trim().replace(/\s*·.*$/, '');
       jobStartDate = parseLinkedInDate(startPart) || undefined;
     }
 
-    // Parse work arrangement from location line
-    let workArrangement: ReturnType<typeof scrapeFirstExperience> extends null ? never : NonNullable<ReturnType<typeof scrapeFirstExperience>>['workArrangement'] = undefined;
-    const locationLine = texts.find((t) => {
-      const lower = t.toLowerCase();
-      return lower.includes('hybrid') || lower.includes('remote') || lower.includes('vor ort') || lower.includes('on-site') || lower.includes('on site');
-    });
-    if (locationLine) {
-      const arrangementPart = locationLine.split('·').pop()?.trim() || '';
-      workArrangement = parseWorkArrangement(arrangementPart);
+    let workArrangement: 'ON_SITE' | 'HYBRID' | 'REMOTE' | undefined;
+    if (leaves[3]) {
+      const locLine = leaves[3].textContent?.trim() || '';
+      const parts = locLine.split('·').map((s) => s.trim());
+      if (parts.length >= 2) workArrangement = parseWorkArrangement(parts[1]);
     }
 
-    // Description: remaining texts after the metadata lines (usually index 4+)
-    // Heuristic: skip lines that look like metadata (dates, company names, locations)
-    const descriptionTexts = texts.slice(4).filter((t) => {
-      return (
-        t.length > 30 &&
-        !/^\d/.test(t) &&
-        !t.match(/\d{4}/) &&
-        !t.includes('·')
-      );
-    });
-    const jobDescription = descriptionTexts.length > 0 ? descriptionTexts.join(' ') : undefined;
+    // Description is typically a SPAN (not P) immediately after the 4 metadata P elements
+    const descEl = leaves.find((el) => el.tagName === 'SPAN');
+    const jobDescription = descEl?.textContent?.trim() || undefined;
 
     return { jobTitle, employmentType, jobStartDate, workArrangement, jobDescription };
   } catch (error) {
