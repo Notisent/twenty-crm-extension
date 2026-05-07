@@ -211,105 +211,7 @@ export class TwentyApiClient {
     this.token = token;
   }
 
-  // Upload an image via GraphQL multipart upload
-  async uploadImageViaGraphQL(imageUrl: string, filename?: string): Promise<string | null> {
-    if (!this.token) {
-      console.error('[Twenty] No authentication token set for image upload');
-      return null;
-    }
 
-    console.log('[Twenty] Starting image upload from:', imageUrl);
-
-    try {
-      // Fetch the image
-      console.log('[Twenty] Fetching image...');
-      const response = await fetch(imageUrl);
-      if (!response.ok) {
-        console.error('[Twenty] Failed to fetch image:', response.status, response.statusText);
-        return null;
-      }
-
-      const blob = await response.blob();
-      console.log('[Twenty] Image fetched, size:', blob.size, 'type:', blob.type);
-
-      const allowedImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-      if (!allowedImageTypes.includes(blob.type)) {
-        console.error('[Twenty] Unexpected content type for profile image:', blob.type);
-        return null;
-      }
-      
-      const finalFilename = filename || `profile-${Date.now()}.jpg`;
-
-      // GraphQL multipart upload format (Apollo Upload spec)
-      // https://github.com/jaydenseric/graphql-multipart-request-spec
-      const operations = JSON.stringify({
-        query: `
-          mutation UploadImage($file: Upload!, $fileFolder: FileFolder) {
-            uploadImage(file: $file, fileFolder: $fileFolder) {
-              path
-              token
-            }
-          }
-        `,
-        variables: {
-          file: null,
-          fileFolder: 'PersonPicture',
-        },
-      });
-
-      const map = JSON.stringify({
-        '0': ['variables.file'],
-      });
-
-      const formData = new FormData();
-      formData.append('operations', operations);
-      formData.append('map', map);
-      formData.append('0', blob, finalFilename);
-
-      const uploadUrl = `${this.baseUrl}/graphql`;
-      console.log('[Twenty] Uploading via GraphQL to:', uploadUrl);
-      
-      const uploadResponse = await fetch(uploadUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-        },
-        body: formData,
-      });
-
-      console.log('[Twenty] Upload response status:', uploadResponse.status);
-
-      if (!uploadResponse.ok) {
-        const errorText = await uploadResponse.text();
-        console.error('[Twenty] Failed to upload image:', uploadResponse.status, errorText);
-        return null;
-      }
-
-      const result = await uploadResponse.json();
-      console.log('[Twenty] Upload result:', result);
-      
-      if (result.errors?.length) {
-        console.error('[Twenty] GraphQL errors:', JSON.stringify(result.errors, null, 2));
-        return null;
-      }
-
-      // Return just the path - Twenty stores paths, not full URLs with tokens
-      // The server will handle authentication when serving the image
-      const uploadData = result.data?.uploadImage;
-      if (uploadData?.path) {
-        // Store just the path - Twenty's frontend will request with fresh tokens
-        const avatarPath = uploadData.path;
-        console.log('[Twenty] Image uploaded successfully, path:', avatarPath);
-        return avatarPath;
-      }
-
-      console.warn('[Twenty] Upload succeeded but no path/token in response:', result);
-      return null;
-    } catch (error) {
-      console.error('[Twenty] Error uploading image:', error);
-      return null;
-    }
-  }
 
   private async graphqlRequest<T>(
     query: string,
@@ -530,25 +432,7 @@ export class TwentyApiClient {
       console.log('[Twenty] No currentCompany in data, skipping company creation');
     }
 
-    // Try to upload profile image to Twenty storage
-    let avatarUrl = data.profileImageUrl || '';
-    if (data.profileImageUrl) {
-      console.log('[Twenty] Attempting to upload profile image...');
-      try {
-        const uploadedUrl = await this.uploadImageViaGraphQL(
-          data.profileImageUrl,
-          `${data.firstName}-${data.lastName}-profile.jpg`
-        );
-        if (uploadedUrl) {
-          avatarUrl = uploadedUrl;
-          console.log('[Twenty] Profile image uploaded, using:', avatarUrl);
-        } else {
-          console.log('[Twenty] Upload failed, using LinkedIn URL directly');
-        }
-      } catch (error) {
-        console.error('[Twenty] Error uploading profile image:', error);
-      }
-    }
+    const avatarUrl = data.profileImageUrl || '';
 
     const result = await this.graphqlRequest<CreatePersonResult>(CREATE_PERSON, {
       input: {
@@ -696,22 +580,7 @@ export class TwentyApiClient {
         }
       }
 
-      // Try to upload profile image to Twenty storage
-      let avatarUrl = personData.profileImageUrl || undefined;
-      if (personData.profileImageUrl) {
-        try {
-          const uploadedUrl = await this.uploadImageViaGraphQL(
-            personData.profileImageUrl,
-            `${personData.firstName}-${personData.lastName}-profile.jpg`
-          );
-          if (uploadedUrl) {
-            avatarUrl = uploadedUrl;
-            console.log('[Twenty] Profile image uploaded for update:', avatarUrl);
-          }
-        } catch (error) {
-          console.error('[Twenty] Error uploading profile image:', error);
-        }
-      }
+      const avatarUrl = personData.profileImageUrl || undefined;
 
       const result = await this.graphqlRequest<{ updatePerson: { id: string } }>(
         UPDATE_PERSON,
