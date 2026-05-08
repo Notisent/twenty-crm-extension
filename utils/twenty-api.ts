@@ -211,105 +211,7 @@ export class TwentyApiClient {
     this.token = token;
   }
 
-  // Upload an image via GraphQL multipart upload
-  async uploadImageViaGraphQL(imageUrl: string, filename?: string): Promise<string | null> {
-    if (!this.token) {
-      console.error('[Twenty] No authentication token set for image upload');
-      return null;
-    }
 
-    console.log('[Twenty] Starting image upload from:', imageUrl);
-
-    try {
-      // Fetch the image
-      console.log('[Twenty] Fetching image...');
-      const response = await fetch(imageUrl);
-      if (!response.ok) {
-        console.error('[Twenty] Failed to fetch image:', response.status, response.statusText);
-        return null;
-      }
-
-      const blob = await response.blob();
-      console.log('[Twenty] Image fetched, size:', blob.size, 'type:', blob.type);
-
-      const allowedImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-      if (!allowedImageTypes.includes(blob.type)) {
-        console.error('[Twenty] Unexpected content type for profile image:', blob.type);
-        return null;
-      }
-      
-      const finalFilename = filename || `profile-${Date.now()}.jpg`;
-
-      // GraphQL multipart upload format (Apollo Upload spec)
-      // https://github.com/jaydenseric/graphql-multipart-request-spec
-      const operations = JSON.stringify({
-        query: `
-          mutation UploadImage($file: Upload!, $fileFolder: FileFolder) {
-            uploadImage(file: $file, fileFolder: $fileFolder) {
-              path
-              token
-            }
-          }
-        `,
-        variables: {
-          file: null,
-          fileFolder: 'PersonPicture',
-        },
-      });
-
-      const map = JSON.stringify({
-        '0': ['variables.file'],
-      });
-
-      const formData = new FormData();
-      formData.append('operations', operations);
-      formData.append('map', map);
-      formData.append('0', blob, finalFilename);
-
-      const uploadUrl = `${this.baseUrl}/graphql`;
-      console.log('[Twenty] Uploading via GraphQL to:', uploadUrl);
-      
-      const uploadResponse = await fetch(uploadUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-        },
-        body: formData,
-      });
-
-      console.log('[Twenty] Upload response status:', uploadResponse.status);
-
-      if (!uploadResponse.ok) {
-        const errorText = await uploadResponse.text();
-        console.error('[Twenty] Failed to upload image:', uploadResponse.status, errorText);
-        return null;
-      }
-
-      const result = await uploadResponse.json();
-      console.log('[Twenty] Upload result:', result);
-      
-      if (result.errors?.length) {
-        console.error('[Twenty] GraphQL errors:', result.errors);
-        return null;
-      }
-
-      // Return just the path - Twenty stores paths, not full URLs with tokens
-      // The server will handle authentication when serving the image
-      const uploadData = result.data?.uploadImage;
-      if (uploadData?.path) {
-        // Store just the path - Twenty's frontend will request with fresh tokens
-        const avatarPath = uploadData.path;
-        console.log('[Twenty] Image uploaded successfully, path:', avatarPath);
-        return avatarPath;
-      }
-
-      console.warn('[Twenty] Upload succeeded but no path/token in response:', result);
-      return null;
-    } catch (error) {
-      console.error('[Twenty] Error uploading image:', error);
-      return null;
-    }
-  }
 
   private async graphqlRequest<T>(
     query: string,
@@ -327,7 +229,6 @@ export class TwentyApiClient {
       },
       body: JSON.stringify({ query, variables }),
     });
-
     if (!response.ok) {
       throw new Error(`HTTP error: ${response.status}`);
     }
@@ -531,25 +432,7 @@ export class TwentyApiClient {
       console.log('[Twenty] No currentCompany in data, skipping company creation');
     }
 
-    // Try to upload profile image to Twenty storage
-    let avatarUrl = data.profileImageUrl || '';
-    if (data.profileImageUrl) {
-      console.log('[Twenty] Attempting to upload profile image...');
-      try {
-        const uploadedUrl = await this.uploadImageViaGraphQL(
-          data.profileImageUrl,
-          `${data.firstName}-${data.lastName}-profile.jpg`
-        );
-        if (uploadedUrl) {
-          avatarUrl = uploadedUrl;
-          console.log('[Twenty] Profile image uploaded, using:', avatarUrl);
-        } else {
-          console.log('[Twenty] Upload failed, using LinkedIn URL directly');
-        }
-      } catch (error) {
-        console.error('[Twenty] Error uploading profile image:', error);
-      }
-    }
+    const avatarUrl = data.profileImageUrl || '';
 
     const result = await this.graphqlRequest<CreatePersonResult>(CREATE_PERSON, {
       input: {
@@ -561,11 +444,15 @@ export class TwentyApiClient {
           primaryLinkUrl: data.linkedinUrl,
           primaryLinkLabel: 'LinkedIn',
         },
-        jobTitle: data.headline || '',
+        jobTitle: data.jobTitleFromExperience || data.headline || '',
         avatarUrl: avatarUrl,
         city: data.location || '',
-        // Link to company if we found/created one
         companyId: companyId,
+        // Custom fields from experience section
+        ...(data.employmentType && { employmentType: data.employmentType }),
+        ...(data.jobStartDate && { jobStartDate: data.jobStartDate }),
+        ...(data.workArrangement && { workArrangement: data.workArrangement }),
+        ...(data.jobDescription && { jobDescription: data.jobDescription }),
       },
     });
 
@@ -583,27 +470,31 @@ export class TwentyApiClient {
   async createCompany(
     data: LinkedInCompanyData
   ): Promise<CreateCompanyResult['createCompany']> {
-    const result = await this.graphqlRequest<CreateCompanyResult>(
-      CREATE_COMPANY,
-      {
-        input: {
-          name: data.name,
-          linkedinLink: {
-            primaryLinkUrl: data.linkedinUrl,
-            primaryLinkLabel: 'LinkedIn',
-          },
-          domainName: data.website
-            ? {
-                primaryLinkUrl: data.website,
-                primaryLinkLabel: 'Website',
-              }
-            : undefined,
-          employees: data.employeeCount
-            ? this.parseEmployeeCount(data.employeeCount)
-            : undefined,
-        },
-      }
-    );
+    const buildInput = (includePhone: boolean) => ({
+      name: data.name,
+      linkedinLink: {
+        primaryLinkUrl: data.linkedinUrl,
+        primaryLinkLabel: 'LinkedIn',
+      },
+      domainName: data.website
+        ? { primaryLinkUrl: this.stripProtocol(data.website), primaryLinkLabel: 'Website' }
+        : undefined,
+      employees: data.employeeCount
+        ? this.parseEmployeeCount(data.employeeCount)
+        : undefined,
+      ...(data.industry && { industry: data.industry }),
+      ...(data.description && { description: data.description }),
+      ...(includePhone && data.phone && { phone: { primaryPhoneNumber: this.normalizePhone(data.phone) } }),
+      ...(data.headquarters && { address: this.parseHeadquarters(data.headquarters) }),
+    });
+
+    let result = await this.graphqlRequest<CreateCompanyResult>(CREATE_COMPANY, { input: buildInput(true) });
+
+    // If phone caused a validation error, retry without it
+    if (result.errors?.length && data.phone) {
+      console.warn('[Twenty] Company create failed (possibly phone validation), retrying without phone:', result.errors[0].message);
+      result = await this.graphqlRequest<CreateCompanyResult>(CREATE_COMPANY, { input: buildInput(false) });
+    }
 
     if (result.errors?.length) {
       throw new Error(result.errors[0].message);
@@ -618,12 +509,12 @@ export class TwentyApiClient {
 
   async testConnection(): Promise<boolean> {
     try {
-      // Simple query to test if the connection works
-      const result = await this.graphqlRequest<{ currentWorkspace: { id: string } }>(
-        `query { currentWorkspace { id } }`
+      const result = await this.graphqlRequest<{ people: unknown }>(
+        `query { people(first: 1) { edges { node { id } } } }`
       );
-      return !result.errors?.length && !!result.data?.currentWorkspace;
-    } catch {
+      return !result.errors?.length && result.data?.people !== undefined;
+    } catch (err) {
+      console.error('[Twenty] testConnection error:', err);
       return false;
     }
   }
@@ -693,22 +584,7 @@ export class TwentyApiClient {
         }
       }
 
-      // Try to upload profile image to Twenty storage
-      let avatarUrl = personData.profileImageUrl || undefined;
-      if (personData.profileImageUrl) {
-        try {
-          const uploadedUrl = await this.uploadImageViaGraphQL(
-            personData.profileImageUrl,
-            `${personData.firstName}-${personData.lastName}-profile.jpg`
-          );
-          if (uploadedUrl) {
-            avatarUrl = uploadedUrl;
-            console.log('[Twenty] Profile image uploaded for update:', avatarUrl);
-          }
-        } catch (error) {
-          console.error('[Twenty] Error uploading profile image:', error);
-        }
-      }
+      const avatarUrl = personData.profileImageUrl || undefined;
 
       const result = await this.graphqlRequest<{ updatePerson: { id: string } }>(
         UPDATE_PERSON,
@@ -723,10 +599,15 @@ export class TwentyApiClient {
               primaryLinkUrl: personData.linkedinUrl,
               primaryLinkLabel: 'LinkedIn',
             },
-            jobTitle: personData.headline || undefined,
+            jobTitle: personData.jobTitleFromExperience || personData.headline || undefined,
             avatarUrl: avatarUrl,
             city: personData.location || undefined,
             companyId: companyId,
+            // Custom fields from experience section
+            ...(personData.employmentType && { employmentType: personData.employmentType }),
+            ...(personData.jobStartDate && { jobStartDate: personData.jobStartDate }),
+            ...(personData.workArrangement && { workArrangement: personData.workArrangement }),
+            ...(personData.jobDescription && { jobDescription: personData.jobDescription }),
           },
         }
       );
@@ -737,28 +618,34 @@ export class TwentyApiClient {
     } else if (type === 'company' && data.type === 'company') {
       const companyData = data as LinkedInCompanyData;
 
-      const result = await this.graphqlRequest<{ updateCompany: { id: string } }>(
-        UPDATE_COMPANY,
-        {
-          id,
-          input: {
-            name: companyData.name,
-            linkedinLink: {
-              primaryLinkUrl: companyData.linkedinUrl,
-              primaryLinkLabel: 'LinkedIn',
-            },
-            domainName: companyData.website
-              ? {
-                  primaryLinkUrl: companyData.website,
-                  primaryLinkLabel: 'Website',
-                }
-              : undefined,
-            employees: companyData.employeeCount
-              ? this.parseEmployeeCount(companyData.employeeCount)
-              : undefined,
-          },
-        }
+      const buildCompanyInput = (includePhone: boolean) => ({
+        name: companyData.name,
+        linkedinLink: {
+          primaryLinkUrl: companyData.linkedinUrl,
+          primaryLinkLabel: 'LinkedIn',
+        },
+        domainName: companyData.website
+          ? { primaryLinkUrl: this.stripProtocol(companyData.website), primaryLinkLabel: 'Website' }
+          : undefined,
+        employees: companyData.employeeCount
+          ? this.parseEmployeeCount(companyData.employeeCount)
+          : undefined,
+        ...(companyData.industry && { industry: companyData.industry }),
+        ...(companyData.description && { description: companyData.description }),
+        ...(includePhone && companyData.phone && { phone: { primaryPhoneNumber: this.normalizePhone(companyData.phone) } }),
+        ...(companyData.headquarters && { address: this.parseHeadquarters(companyData.headquarters) }),
+      });
+
+      let result = await this.graphqlRequest<{ updateCompany: { id: string } }>(
+        UPDATE_COMPANY, { id, input: buildCompanyInput(true) }
       );
+
+      if (result.errors?.length && companyData.phone) {
+        console.warn('[Twenty] Company update failed (possibly phone validation), retrying without phone:', result.errors[0].message);
+        result = await this.graphqlRequest<{ updateCompany: { id: string } }>(
+          UPDATE_COMPANY, { id, input: buildCompanyInput(false) }
+        );
+      }
 
       if (result.errors?.length) {
         throw new Error(result.errors[0].message);
@@ -766,10 +653,32 @@ export class TwentyApiClient {
     }
   }
 
+  private stripProtocol(url: string): string {
+    return url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+  }
+
+  private normalizePhone(phone: string): string {
+    const trimmed = phone.trim();
+    // Already has a country code
+    if (trimmed.startsWith('+')) return trimmed;
+    // German local format: leading 0 → +49
+    if (trimmed.startsWith('0')) return '+49' + trimmed.slice(1);
+    return trimmed;
+  }
+
   private normalizeLinkedInUrl(url: string): string {
     // Extract the profile/company identifier from various LinkedIn URL formats
     const match = url.match(/linkedin\.com\/(in|company)\/([^/?]+)/);
     return match ? match[2] : url;
+  }
+
+  private parseHeadquarters(hq: string): { addressCity?: string; addressState?: string; addressCountry?: string } {
+    const parts = hq.split(',').map((s) => s.trim()).filter(Boolean);
+    return {
+      addressCity: parts[0] || undefined,
+      addressState: parts[1] || undefined,
+      addressCountry: parts[2] || undefined,
+    };
   }
 
   private parseEmployeeCount(countStr: string): number | undefined {
