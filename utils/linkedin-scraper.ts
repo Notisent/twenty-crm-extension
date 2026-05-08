@@ -66,26 +66,38 @@ export function scrapePersonProfile(): LinkedInProfileData | null {
 
     const headline = topCardPs[0]?.textContent?.trim() || '';
 
-    // Company priority:
-    // 1. Experience section leaves[1] first segment — the actual employer list, most accurate
-    // 2. scrapeCurrentCompanyFromProfile — explicit link/button (also gives LinkedIn URL)
-    // 3. topCardPs[1] first segment — header concatenates multiple employers with "·"; take first only
-    // (headline extraction removed: too unreliable when person has multiple roles/employers)
-    const experienceData = scrapeFirstExperience();
-
-    let currentCompany = experienceData?.currentCompany || '';
+    // Company extraction — four fallbacks in order of reliability:
+    // 1. Explicit company link/button in top card (gives LinkedIn URL too)
+    // 2. Experience section first entry company (only if section loaded in DOM)
+    // 3. "bei/at/chez" pattern in headline — e.g. "Engineer bei Acme" → "Acme"
+    // 4. topCardPs[1] split on "·", skipping education institution segments
+    //    (LinkedIn top card concatenates employers AND universities with "·")
+    let currentCompany = '';
     let currentCompanyLinkedInUrl: string | undefined;
 
-    if (!currentCompany) {
-      const companyData = scrapeCurrentCompanyFromProfile();
-      if (companyData?.name) {
-        currentCompany = companyData.name;
-        currentCompanyLinkedInUrl = companyData.linkedinUrl;
+    const companyData = scrapeCurrentCompanyFromProfile();
+    if (companyData?.name) {
+      currentCompany = companyData.name;
+      currentCompanyLinkedInUrl = companyData.linkedinUrl;
+    }
+
+    const experienceData = scrapeFirstExperience();
+
+    if (!currentCompany && experienceData?.currentCompany) {
+      currentCompany = experienceData.currentCompany;
+      if (experienceData.currentCompanyLinkedInUrl && !currentCompanyLinkedInUrl) {
+        currentCompanyLinkedInUrl = experienceData.currentCompanyLinkedInUrl;
       }
     }
 
+    if (!currentCompany) {
+      currentCompany = extractCompanyFromHeadline(headline) || '';
+    }
+
     if (!currentCompany && topCardPs[1]) {
-      currentCompany = topCardPs[1].textContent?.trim().split('·')[0].trim() || '';
+      const segments = (topCardPs[1].textContent?.trim() || '').split('·').map(s => s.trim()).filter(Boolean);
+      const companySegment = segments.find(s => !isEducationInstitution(s));
+      currentCompany = companySegment || '';
     }
 
     // Location: third meaningful p (or second if no company found yet)
@@ -196,54 +208,139 @@ function scrapeCurrentCompanyFromProfile(): { name: string; linkedinUrl?: string
   }
 }
 
-// Scrape company page data from LinkedIn
+// Scrape company page data from LinkedIn.
+// Works on both /company/slug/ (overview) and /company/slug/about/ pages.
+// The about page has a <dl> with labeled fields; the overview page has fewer fields.
 export function scrapeCompanyPage(): LinkedInCompanyData | null {
   try {
-    const linkedinUrl = window.location.href.split('?')[0];
+    const linkedinUrl = window.location.href.split('?')[0].replace(/\/about\/?$/, '/');
 
-    // Company name: new LinkedIn uses h2, old used h1
-    const nameElement =
-      document.querySelector('main h1') ||
-      document.querySelector('main h2') ||
-      document.querySelector('h1.org-top-card-summary__title') ||
-      document.querySelector('h1[title]');
-
-    if (!nameElement) {
+    // Company name: always an H1 on company pages
+    const name = document.querySelector('main h1')?.textContent?.trim() || '';
+    if (!name) {
       console.warn('Could not find company name element');
       return null;
     }
 
-    const name = nameElement.textContent?.trim() || '';
+    // Logo: square profile image has alt="Logo für <name>" / "Logo for <name>"
+    const logoImg = Array.from(document.querySelectorAll('main img')).find(
+      (img) => /logo/i.test((img as HTMLImageElement).alt)
+    ) as HTMLImageElement | undefined;
+    const logoUrl = logoImg?.src || undefined;
 
-    // Employee count: look for text containing "employees"
-    let employeeCount = '';
-    document.querySelectorAll('main p, main span, main dd, main li').forEach((el) => {
-      const text = el.textContent?.trim() || '';
-      if (
-        el.childElementCount === 0 &&
-        (text.includes('employees') || text.includes('Beschäftigte') || text.includes('empleados'))
-      ) {
-        employeeCount = text;
+    // Find the overview/about section by H2 label (localised)
+    const sections = Array.from(document.querySelectorAll('main section'));
+    const overviewSection = sections.find((s) =>
+      /^(Übersicht|Overview|Aperçu|Información general|Panoramica)/i.test(
+        s.querySelector('h2')?.textContent?.trim() || ''
+      )
+    );
+
+    // Description: first P directly inside the overview section
+    const description = overviewSection?.querySelector('p')?.textContent?.trim() || undefined;
+
+    // DL-based field extractor — works on the about page.
+    // Structure: <dt><h3>Label</h3></dt><dd>Value</dd>  (or <a href> for website)
+    function getDlField(...labels: string[]): string {
+      if (!overviewSection) return '';
+      for (const label of labels) {
+        const dt = Array.from(overviewSection.querySelectorAll('dt')).find((dt) =>
+          dt.querySelector('h3')?.textContent?.trim().toLowerCase() === label.toLowerCase()
+        );
+        if (!dt) continue;
+        // Nearest following <dd> sibling
+        let el: Element | null = dt.nextElementSibling;
+        while (el) {
+          if (el.tagName === 'DD') return el.textContent?.trim() || '';
+          el = el.nextElementSibling;
+        }
+        // Fallback: same-index DD in the parent DL
+        const dl = dt.closest('dl');
+        if (dl) {
+          const dtIdx = Array.from(dl.querySelectorAll('dt')).indexOf(dt);
+          const dd = dl.querySelectorAll('dd')[dtIdx];
+          if (dd) return dd.textContent?.trim() || '';
+        }
       }
-    });
+      return '';
+    }
 
-    // Website
-    const websiteElement =
-      document.querySelector('a[data-control-name="top_card_link_website"]') ||
-      document.querySelector('a[href*="http"]:not([href*="linkedin.com"])');
-    const website = websiteElement?.getAttribute('href') || '';
+    // Website: the DT sibling contains an <a href> rather than a plain DD
+    function getWebsite(): string {
+      if (!overviewSection) return '';
+      const dt = Array.from(overviewSection.querySelectorAll('dt')).find((dt) =>
+        /^website$/i.test(dt.querySelector('h3')?.textContent?.trim() || '')
+      );
+      if (!dt) {
+        // Fallback: any external link in the overview section
+        const a = overviewSection.querySelector('a[href^="http"]:not([href*="linkedin.com"])');
+        return a?.getAttribute('href') || a?.textContent?.trim() || '';
+      }
+      // Search next few siblings for an external link
+      let el: Element | null = dt.nextElementSibling;
+      for (let i = 0; i < 4 && el; i++, el = el.nextElementSibling) {
+        const a = (el.tagName === 'A' ? el : el.querySelector('a[href]')) as HTMLAnchorElement | null;
+        const href = a?.getAttribute('href') || '';
+        if (href && !href.startsWith('/') && !href.startsWith('tel:') && !href.includes('linkedin.com')) {
+          return href;
+        }
+        // The SPAN inside the A often holds the display URL
+        const span = el.querySelector('span');
+        if (span?.textContent?.trim().startsWith('http')) return span.textContent.trim();
+      }
+      return '';
+    }
 
-    // Industry / description
-    const descElement = document.querySelector('.org-top-card-summary__tagline');
-    const description = descElement?.textContent?.trim() || '';
+    const website = getWebsite();
+    const industry = getDlField('Branche', 'Industry', 'Sector', 'Secteur', 'Industria', 'Settore');
+    const employeeCount = getDlField('Größe', 'Size', 'Taille', 'Tamaño', 'Dimensione');
+    const headquarters = getDlField('Hauptsitz', 'Headquarters', 'Siège social', 'Sede', 'Sede centrale');
+
+    // Phone: DT sibling has a tel: link
+    const phoneDt = Array.from(overviewSection?.querySelectorAll('dt') || []).find((dt) =>
+      /^(telefon|phone|téléphone|teléfono|telefono)$/i.test(dt.querySelector('h3')?.textContent?.trim() || '')
+    );
+    let phone: string | undefined;
+    if (phoneDt) {
+      let el: Element | null = phoneDt.nextElementSibling;
+      for (let i = 0; i < 4 && el; i++, el = el.nextElementSibling) {
+        const a = (el.tagName === 'A' ? el : el.querySelector('a[href^="tel:"]')) as HTMLAnchorElement | null;
+        const span = el.querySelector('span');
+        const text = a?.getAttribute('href')?.replace('tel:', '') || span?.textContent?.trim();
+        if (text) { phone = text; break; }
+      }
+    }
+
+    // Prefer the precise "assoziierte Mitglieder / associated members" count over the
+    // vague DL range ("11 bis 50 Beschäftigte"). Extract the leading number from the link.
+    const associatedMembersLink = Array.from(document.querySelectorAll('main a')).find((a) =>
+      /\d+\s*(assoziierte|associated)/i.test(a.textContent?.trim() || '')
+    );
+    const associatedMembersCount = associatedMembersLink
+      ? associatedMembersLink.textContent?.trim().match(/^(\d+)/)?.[1]
+      : undefined;
+
+    // Fallback employee count from link text (overview page only, when DL not present)
+    const employeeCountFallback = !employeeCount
+      ? (() => {
+          const link = Array.from(document.querySelectorAll('main a')).find((a) =>
+            /\d.*(Beschäftigte|employees|empleados)/i.test(a.textContent?.trim() || '')
+          );
+          return link?.textContent?.trim() || '';
+        })()
+      : '';
 
     return {
       type: 'company',
       linkedinUrl,
       name,
+      logoUrl,
       website: website || undefined,
-      employeeCount: employeeCount || undefined,
+      industry: industry || undefined,
+      employeeCount: associatedMembersCount || employeeCount || employeeCountFallback || undefined,
       description: description || undefined,
+      phone: phone || undefined,
+      headquarters: headquarters || undefined,
     };
   } catch (error) {
     console.error('Error scraping company page:', error);
@@ -266,17 +363,46 @@ export function scrapeCurrentPage(): LinkedInData | null {
   return null;
 }
 
-// Scrape the first (most recent) experience entry from the experience section
+// Scrape the first (most recent) experience entry from the experience section.
+//
+// LinkedIn renders two distinct entry shapes:
+//
+// A) Nested/grouped — person held multiple roles at one company:
+//    <a href="/company/...">          ← NOT inside <ul>
+//      <p>Herodikos</p>               ← company name
+//      <p>Vollzeit · 6 Jahre 2 Monate</p>  ← employment type · total tenure
+//    </a>
+//    <ul>                              ← sibling UL (roles)
+//      <li>
+//        <a href="/company/...">
+//          <p>Geschäftsführer, Product & Operations</p>  ← job title
+//          <p>Mai 2023–Heute · 3 Jahre 1 Monat</p>        ← date
+//          <p>Oldenburg … · Hybrid</p>                    ← location · arrangement
+//        </a>
+//      </li>
+//      ...
+//    </ul>
+//
+// B) Simple — single role at a company with a LinkedIn page:
+//    <a href="/company/...">          ← NOT inside <ul>
+//      <p>Product Owner</p>           ← job title
+//      <p>worldiety GmbH · Vollzeit</p>   ← company · type
+//      <p>Feb. 2013–Apr. 2019 · …</p>    ← date
+//      <p>Oldenburg …</p>                 ← location
+//    </a>
+//
+// C) Simple — role at a company without a LinkedIn page (no <a href>):
+//    leaf Ps in DOM order: title, company name, date range
 function scrapeFirstExperience(): {
   jobTitle?: string;
   currentCompany?: string;
+  currentCompanyLinkedInUrl?: string;
   employmentType?: 'FULL_TIME' | 'PART_TIME' | 'SELF_EMPLOYED' | 'FREELANCE' | 'CONTRACT' | 'INTERNSHIP';
   jobStartDate?: string;
   workArrangement?: 'ON_SITE' | 'HYBRID' | 'REMOTE';
   jobDescription?: string;
 } | null {
   try {
-    // Find the experience section by its H2 heading text (works across all locales)
     const sections = Array.from(document.querySelectorAll('section'));
     const expSection = sections.find((s) => {
       const h2 = s.querySelector('h2');
@@ -286,68 +412,111 @@ function scrapeFirstExperience(): {
 
     if (!expSection) return null;
 
-    // Collect all leaf elements (no child elements, non-empty text), skipping the H2 heading
-    const leaves = Array.from(expSection.querySelectorAll('*')).filter(
-      (el) => el.childElementCount === 0 && (el.textContent?.trim().length ?? 0) > 0 && el.tagName !== 'H2'
+    // Find top-level company links — <a href="/company/..."> that are NOT nested inside a <ul>
+    // (links inside <ul> are individual roles within a nested group, handled separately below)
+    const topLevelLinks = Array.from(
+      expSection.querySelectorAll('a[href*="/company/"]')
+    ).filter((a) => !a.closest('ul') && a.querySelector('p')) as HTMLElement[];
+
+    if (topLevelLinks.length > 0) {
+      const firstLink = topLevelLinks[0];
+      const ps = Array.from(firstLink.querySelectorAll('p'));
+      const href = firstLink.getAttribute('href') || '';
+      const currentCompanyLinkedInUrl = href.includes('linkedin.com') ? href : (href ? `https://www.linkedin.com${href}` : undefined);
+
+      const p0 = ps[0]?.textContent?.trim() || '';
+      const p1 = ps[1]?.textContent?.trim() || '';
+      const p1Parts = p1.split('·').map((s) => s.trim());
+
+      // Distinguish shape A from shape B:
+      // Shape A (nested group header): exactly 2 Ps, and P[1]'s second segment is a duration
+      // Shape B (simple entry): 3-4 Ps, P[1] = "Company · EmploymentType"
+      const secondSegmentIsDuration = /\d+\s*(Jahr|Monat|Month|Year|Año|Ano)/i.test(p1Parts[1] || '');
+      const isNestedGroup = ps.length === 2 && secondSegmentIsDuration;
+
+      if (isNestedGroup) {
+        // Shape A: P[0] = company, P[1] = "EmploymentType · TotalDuration"
+        const currentCompany = p0 || undefined;
+        const employmentType = parseEmploymentType(p1Parts[0]);
+
+        // Find the sibling UL containing the individual roles
+        let el: Element | null = firstLink;
+        let groupUl: HTMLUListElement | null = null;
+        while (el && el !== expSection) {
+          if (el.tagName === 'DIV') {
+            const candidate = el.querySelector(':scope > ul') as HTMLUListElement | null;
+            if (candidate) { groupUl = candidate; break; }
+          }
+          el = el.parentElement;
+        }
+
+        let jobTitle: string | undefined;
+        let jobStartDate: string | undefined;
+        let workArrangement: 'ON_SITE' | 'HYBRID' | 'REMOTE' | undefined;
+
+        const firstLi = groupUl?.querySelector('li');
+        if (firstLi) {
+          const rolePs = Array.from(firstLi.querySelectorAll('p'));
+          jobTitle = rolePs[0]?.textContent?.trim() || undefined;
+          const dateLine = rolePs[1]?.textContent?.trim() || '';
+          const startPart = dateLine.split(/[–\-]/)[0].trim().replace(/\s*·.*$/, '');
+          jobStartDate = parseLinkedInDate(startPart) || undefined;
+          const locLine = rolePs[2]?.textContent?.trim() || '';
+          const locParts = locLine.split('·').map((s) => s.trim());
+          if (locParts.length >= 2) workArrangement = parseWorkArrangement(locParts[1]);
+        }
+
+        return { jobTitle, currentCompany, currentCompanyLinkedInUrl, employmentType, jobStartDate, workArrangement };
+
+      } else {
+        // Shape B: P[0] = title, P[1] = "Company · EmploymentType", P[2] = date, P[3] = location
+        const jobTitle = p0 || undefined;
+        const currentCompany = p1Parts[0] || undefined;
+        const employmentType = p1Parts.length >= 2 ? parseEmploymentType(p1Parts[1]) : undefined;
+        const dateLine = ps[2]?.textContent?.trim() || '';
+        const startPart = dateLine.split(/[–\-]/)[0].trim().replace(/\s*·.*$/, '');
+        const jobStartDate = parseLinkedInDate(startPart) || undefined;
+        const locLine = ps[3]?.textContent?.trim() || '';
+        const locParts = locLine.split('·').map((s) => s.trim());
+        const workArrangement = locParts.length >= 2 ? parseWorkArrangement(locParts[1]) : undefined;
+
+        return { jobTitle, currentCompany, currentCompanyLinkedInUrl, employmentType, jobStartDate, workArrangement };
+      }
+    }
+
+    // Shape C fallback: no company links — collect leaf Ps in order
+    // Structure: P[0]=title, P[1]=company name, P[2]=date
+    const leaves = Array.from(expSection.querySelectorAll('p')).filter(
+      (el) => el.childElementCount === 0 && (el.textContent?.trim().length ?? 0) > 0
     );
-
-    if (leaves.length < 2) return null;
-
-    // LinkedIn experience entry structure (leaf P elements in order):
-    // [0] P  → job title           e.g. "Lead Software Engineer"
-    // [1] P  → company · type      e.g. "GlobalLogic · Vollzeit"
-    // [2] P  → date · duration     e.g. "Apr. 2023–Heute · 3 Jahre 2 Monate"
-    // [3] P  → location · arrange  e.g. "Berlin, Deutschland · Hybrid"
-    // [4] SPAN → description text
-
+    if (leaves.length < 1) return null;
     const jobTitle = leaves[0]?.textContent?.trim() || undefined;
-
-    // leaves[1] = "Company · EmploymentType" or just "EmploymentType" (when company isn't shown)
     let currentCompany: string | undefined;
     let employmentType: 'FULL_TIME' | 'PART_TIME' | 'SELF_EMPLOYED' | 'FREELANCE' | 'CONTRACT' | 'INTERNSHIP' | undefined;
     if (leaves[1]) {
       const raw = leaves[1].textContent?.trim() || '';
-      const parts = raw.split('·').map((s) => s.trim());
-      if (parts.length >= 2) {
-        // "Company · EmploymentType" — unambiguous
-        currentCompany = parts[0] || undefined;
-        employmentType = parseEmploymentType(parts[1]);
-      } else {
-        // Single segment: could be a company name OR just an employment type keyword
-        // Only treat as company name if it doesn't match any employment type
-        const asType = parseEmploymentType(raw);
-        if (asType) {
-          employmentType = asType;
-          // company name not available from this leaf; leave currentCompany undefined
-        } else {
-          currentCompany = raw || undefined;
-        }
-      }
+      const asType = parseEmploymentType(raw);
+      if (asType) employmentType = asType;
+      else currentCompany = raw || undefined;
     }
-
     let jobStartDate: string | undefined;
     if (leaves[2]) {
       const dateLine = leaves[2].textContent?.trim() || '';
       const startPart = dateLine.split(/[–\-]/)[0].trim().replace(/\s*·.*$/, '');
       jobStartDate = parseLinkedInDate(startPart) || undefined;
     }
+    return { jobTitle, currentCompany, employmentType, jobStartDate };
 
-    let workArrangement: 'ON_SITE' | 'HYBRID' | 'REMOTE' | undefined;
-    if (leaves[3]) {
-      const locLine = leaves[3].textContent?.trim() || '';
-      const parts = locLine.split('·').map((s) => s.trim());
-      if (parts.length >= 2) workArrangement = parseWorkArrangement(parts[1]);
-    }
-
-    // Description is typically a SPAN (not P) immediately after the 4 metadata P elements
-    const descEl = leaves.find((el) => el.tagName === 'SPAN');
-    const jobDescription = descEl?.textContent?.trim() || undefined;
-
-    return { jobTitle, currentCompany, employmentType, jobStartDate, workArrangement, jobDescription };
   } catch (error) {
     console.error('Error scraping experience section:', error);
     return null;
   }
+}
+
+// Detect whether a name segment is an educational institution so it can be
+// excluded when picking the company name from a "·"-joined top-card string.
+function isEducationInstitution(name: string): boolean {
+  return /universit|hochschule|fachhochschule|college|school|akademie|academy|institute|institut|école|universidad|università/i.test(name);
 }
 
 // Map LinkedIn employment type strings to our enum

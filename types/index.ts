@@ -26,6 +26,8 @@ export type LinkedInCompanyData = {
   employeeCount?: string;
   logoUrl?: string;
   description?: string;
+  phone?: string;
+  headquarters?: string; // raw "City, State" or "City, State, Country"
 };
 
 export type LinkedInData = LinkedInProfileData | LinkedInCompanyData;

@@ -470,27 +470,31 @@ export class TwentyApiClient {
   async createCompany(
     data: LinkedInCompanyData
   ): Promise<CreateCompanyResult['createCompany']> {
-    const result = await this.graphqlRequest<CreateCompanyResult>(
-      CREATE_COMPANY,
-      {
-        input: {
-          name: data.name,
-          linkedinLink: {
-            primaryLinkUrl: data.linkedinUrl,
-            primaryLinkLabel: 'LinkedIn',
-          },
-          domainName: data.website
-            ? {
-                primaryLinkUrl: data.website,
-                primaryLinkLabel: 'Website',
-              }
-            : undefined,
-          employees: data.employeeCount
-            ? this.parseEmployeeCount(data.employeeCount)
-            : undefined,
-        },
-      }
-    );
+    const buildInput = (includePhone: boolean) => ({
+      name: data.name,
+      linkedinLink: {
+        primaryLinkUrl: data.linkedinUrl,
+        primaryLinkLabel: 'LinkedIn',
+      },
+      domainName: data.website
+        ? { primaryLinkUrl: this.stripProtocol(data.website), primaryLinkLabel: 'Website' }
+        : undefined,
+      employees: data.employeeCount
+        ? this.parseEmployeeCount(data.employeeCount)
+        : undefined,
+      ...(data.industry && { industry: data.industry }),
+      ...(data.description && { description: data.description }),
+      ...(includePhone && data.phone && { phone: { primaryPhoneNumber: this.normalizePhone(data.phone) } }),
+      ...(data.headquarters && { address: this.parseHeadquarters(data.headquarters) }),
+    });
+
+    let result = await this.graphqlRequest<CreateCompanyResult>(CREATE_COMPANY, { input: buildInput(true) });
+
+    // If phone caused a validation error, retry without it
+    if (result.errors?.length && data.phone) {
+      console.warn('[Twenty] Company create failed (possibly phone validation), retrying without phone:', result.errors[0].message);
+      result = await this.graphqlRequest<CreateCompanyResult>(CREATE_COMPANY, { input: buildInput(false) });
+    }
 
     if (result.errors?.length) {
       throw new Error(result.errors[0].message);
@@ -614,28 +618,34 @@ export class TwentyApiClient {
     } else if (type === 'company' && data.type === 'company') {
       const companyData = data as LinkedInCompanyData;
 
-      const result = await this.graphqlRequest<{ updateCompany: { id: string } }>(
-        UPDATE_COMPANY,
-        {
-          id,
-          input: {
-            name: companyData.name,
-            linkedinLink: {
-              primaryLinkUrl: companyData.linkedinUrl,
-              primaryLinkLabel: 'LinkedIn',
-            },
-            domainName: companyData.website
-              ? {
-                  primaryLinkUrl: companyData.website,
-                  primaryLinkLabel: 'Website',
-                }
-              : undefined,
-            employees: companyData.employeeCount
-              ? this.parseEmployeeCount(companyData.employeeCount)
-              : undefined,
-          },
-        }
+      const buildCompanyInput = (includePhone: boolean) => ({
+        name: companyData.name,
+        linkedinLink: {
+          primaryLinkUrl: companyData.linkedinUrl,
+          primaryLinkLabel: 'LinkedIn',
+        },
+        domainName: companyData.website
+          ? { primaryLinkUrl: this.stripProtocol(companyData.website), primaryLinkLabel: 'Website' }
+          : undefined,
+        employees: companyData.employeeCount
+          ? this.parseEmployeeCount(companyData.employeeCount)
+          : undefined,
+        ...(companyData.industry && { industry: companyData.industry }),
+        ...(companyData.description && { description: companyData.description }),
+        ...(includePhone && companyData.phone && { phone: { primaryPhoneNumber: this.normalizePhone(companyData.phone) } }),
+        ...(companyData.headquarters && { address: this.parseHeadquarters(companyData.headquarters) }),
+      });
+
+      let result = await this.graphqlRequest<{ updateCompany: { id: string } }>(
+        UPDATE_COMPANY, { id, input: buildCompanyInput(true) }
       );
+
+      if (result.errors?.length && companyData.phone) {
+        console.warn('[Twenty] Company update failed (possibly phone validation), retrying without phone:', result.errors[0].message);
+        result = await this.graphqlRequest<{ updateCompany: { id: string } }>(
+          UPDATE_COMPANY, { id, input: buildCompanyInput(false) }
+        );
+      }
 
       if (result.errors?.length) {
         throw new Error(result.errors[0].message);
@@ -643,10 +653,32 @@ export class TwentyApiClient {
     }
   }
 
+  private stripProtocol(url: string): string {
+    return url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+  }
+
+  private normalizePhone(phone: string): string {
+    const trimmed = phone.trim();
+    // Already has a country code
+    if (trimmed.startsWith('+')) return trimmed;
+    // German local format: leading 0 → +49
+    if (trimmed.startsWith('0')) return '+49' + trimmed.slice(1);
+    return trimmed;
+  }
+
   private normalizeLinkedInUrl(url: string): string {
     // Extract the profile/company identifier from various LinkedIn URL formats
     const match = url.match(/linkedin\.com\/(in|company)\/([^/?]+)/);
     return match ? match[2] : url;
+  }
+
+  private parseHeadquarters(hq: string): { addressCity?: string; addressState?: string; addressCountry?: string } {
+    const parts = hq.split(',').map((s) => s.trim()).filter(Boolean);
+    return {
+      addressCity: parts[0] || undefined,
+      addressState: parts[1] || undefined,
+      addressCountry: parts[2] || undefined,
+    };
   }
 
   private parseEmployeeCount(countStr: string): number | undefined {
